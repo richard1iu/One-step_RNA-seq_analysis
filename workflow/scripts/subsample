@@ -1,0 +1,6 @@
+subsample(){
+fq=$1
+seqtk sample -s123 s${fq}_1.fq.gz 100000 > sub${fq}_1.fq.gz
+seqtk sample -s123 s${fq}_2.fq.gz 100000 > sub${fq}_2.fq.gz
+}
+subsample $1

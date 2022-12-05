@@ -1,0 +1,9 @@
+DATA:
+- sub10
+- sub11
+- sub12
+- sub1
+- sub2
+- sub3
+
+fastqc_result: /mnt/d/Database/snakemake_rna-seq/result/fastqc_results/
