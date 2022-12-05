@@ -107,7 +107,7 @@ rule star_index:
     input:
         reference_genome = reference_genome
     output:
-        index_dir = star_index_dir,
+        index_dir = directory(star_index_dir),
         index_file = star_index_dir+"star_index.txt"
     threads:
         4
@@ -145,13 +145,13 @@ rule hisat2_index:
     input:
         reference_genome = reference_genome
     output:
-        index_genome = hisat2_index_dir+"hisat2_index",
+        index_genome = directory(hisat2_index_dir),
         index_file = hisat2_index_dir+"hisat2_index.txt"
     threads:
         4
     shell:
         """
-        hisat2-build -p 4 {input} {output.index_genome}
+        hisat2-build -p 4 {input} {output.index_genome}hisat2_index
         touch {output.index_file}
         """
 
@@ -213,7 +213,7 @@ rule gffcompare:
     input:
         gtf = rules.stringtie_merge.output.gtf
     output:
-        gffcompare = stringtie_dir+"gffcompare.annotated.gtf"
+        gffcompare = stringtie_dir+"gffcompare/gffcompare.annotated.gtf"
     params:
         stringtie_dir=stringtie_dir,
         reference_gtf=reference_gtf
@@ -221,7 +221,7 @@ rule gffcompare:
         4
     shell:
         """
-        gffcompare -r {params.reference_gtf} -o {params.stringtie_dir}gffcompare {input.gtf}
+        gffcompare -r {params.reference_gtf} -o {params.stringtie_dir}gffcompare/gffcompare {input.gtf}
         """
 
 rule stringtie_quant:
