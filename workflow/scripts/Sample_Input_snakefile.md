@@ -1,5 +1,6 @@
 ## snakefile
 
+## method 1
 import pandas
 
 def parse_samples(samples_tsv):
@@ -9,6 +10,15 @@ def get_sample_id(sample_df, wildcards, col):
     return sample_df.loc[wildcards.sample, [col]].dropna()[0]
 
 _samples = parse_samples("sample.txt")
+
+## method 2
+import glob
+SAMPLES = []
+for filename in glob.glob(r'sra_file/*.sra'):
+    SAMPLES.append(filename.replace('.sra','').replace('sra_file/',''))
+rule all:
+    input:
+        expand('fastq_file/{sample}.fastq', sample=SAMPLES)
 
 rule all:
     input:
