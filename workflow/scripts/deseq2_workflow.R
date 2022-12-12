@@ -1,4 +1,5 @@
 options(warn = -1)
+options(stringsAsFactors = F)
 
 # 1.install packages ------------------------------------------------------
 
@@ -19,30 +20,42 @@ library(BiocManager)
 if (!require("DESeq2", quietly = TRUE)) {
   BiocManager::install("DESeq2")
 }
-library(DESeq2, quietly = TRUE)
 
 if (!require("apeglm", quietly = TRUE)) {
   BiocManager::install("apeglm")
 }
+install.packages("XML")
+BiocManager::install("topGO")
+BiocManager::install("Rgraphviz")
+
+library(DESeq2, quietly = TRUE) %>% suppressMessages()
 library(apeglm, quietly = TRUE)
 library(pheatmap)
 library(RColorBrewer)
-BiocManager::install("pathview")
+library(data.table)
+library(pathview) %>% suppressMessages()
+library(Rgraphviz)
+library(topGO)
+
 # 2.Import files ----------------------------------------------------------
 # import count matrix
-transcript_count <- read.csv("D:/Database/snakemake_rna-seq/results/quant/stringtie/gene_count_matrix.csv", row.names = 1) %>%
-  filter(rowSums(., na.rm = TRUE) > 0)
-gene_count <- read.csv("D:/Database/snakemake_rna-seq/results/quant/stringtie/gene_count_matrix.csv", row.names = 1) %>%
-  filter(rowSums(., na.rm = TRUE) > 0)
+transcript_count <- read.csv("C:/Users/grasslab/Desktop/snakemake/One-step_RNA-seq_analysis/results/quant/stringtie/transcript_count_matrix.csv") %>%
+  as_tibble() %>% column_to_rownames("gene_id") %>% filter(rowSums(., na.rm = TRUE) > 0)
+
+gene_count <- data.table::fread("C:/Users/grasslab/Desktop/snakemake/One-step_RNA-seq_analysis/results/quant/stringtie/gene_count_matrix.csv") %>%
+  as_tibble() %>% column_to_rownames("gene_id") %>% filter(rowSums(., na.rm = TRUE) > 0)
 
 # import group file
-group <- read.table("D:/Database/snakemake_rna-seq/data/sample_group.txt", row.names = 1, header = T)
+group <- read.table("C:/Users/grasslab/Desktop/snakemake/One-step_RNA-seq_analysis/data/sample_group.txt", row.names = 1, header = T)
 names(group[, 1]) <- "group"
+group <- data.frame(id = colnames(gene_count),
+                    group = rep(c("CK","Treat"),each = 3)) %>% 
+                    column_to_rownames("id")
 
 # 3.Deseq2 analysis -------------------------------------------------------
 
 # import data as deseq2 object
-dds <- DESeqDataSetFromMatrix(countData = gene_count, colData = group, design = ~group)
+dds <- DESeqDataSetFromMatrix(countData = gene_count, colData = group, design = ~ group)
 # deseq2 analysis
 dds <- DESeq(dds)
 
@@ -51,11 +64,11 @@ res <- results(dds, pAdjustMethod = "fdr", alpha = 0.05)
 summary(res)
 
 # extract diff gene list
-diff_gene_list <- res %>% as.data.frame() %>% 
-  merge(gene_count, by = "row.names") %>% 
-  mutate(sig = case_when(log2FoldChange > 1 & pvalue < 0.1 ~"up",
-                         log2FoldChange < -1 & pvalue < 0.1~"down",
-                         TRUE~"insig"))
+diff_gene_list <- res %>% as.data.frame() %>%
+  merge(gene_count, by = "row.names") %>%
+  mutate(sig = case_when(log2FoldChange > 1  & pvalue < 0.1 ~ "up",
+                         log2FoldChange < -1 & pvalue < 0.1 ~ "down",
+                         TRUE ~ "insig"))
 # export as .csv
 write.csv(diff_gene_list, file = "results/quant/stringtie/diff_gene_list.csv")
 
@@ -64,7 +77,7 @@ write.csv(diff_gene_list, file = "results/quant/stringtie/diff_gene_list.csv")
 shf_count <- lfcShrink(dds, coef = resultsNames(dds)[2], type = "apeglm")
 
 # (optional) normalization
-normal_Count <- counts(dds, normalized = TRUE) %>% as.data.frame()
+normal_count <- counts(dds, normalized = TRUE) %>% as.data.frame()
 
 # (optional) log2 transfer: samples >30 using vst
 log2_count <- rlog(dds)
@@ -101,7 +114,7 @@ ggplot(data = diff_gene_list,
   theme(panel.grid = element_blank())
 
 
-# heatmap -----------------------------------------------------------------
+# heatmap ----------------------------------------------------
 
 diff_sig_gene <- diff_gene_list %>% filter(sig != "insig")
 heatmap_data <- log2_count %>% assay() %>% as.data.frame %>% .[diff_sig_gene$Row.names,]
@@ -128,7 +141,7 @@ pheatmap(mat = heatmap_data,
          show_colnames = F)
 
 
-# Ensembl id transfer (optional) ---------------------------------------------------------------
+# Ensembl id transfer (optional) ------------------------------
 readCount <- gene_count %>%
   dplyr::mutate(gene_id = rownames(gene_count)) %>%
   tidyr::separate(col = gene_id, into = c("ensembl_gene_id", "gene_name"), sep = "\\|", remove = TRUE) %>%
@@ -205,6 +218,12 @@ barplot(go_enrich,
         showCategory = 10, 
         title = "GO Biological Pathways",
         font.size = 8)
+
+# network graph
+enrichMap(go_enrich, vertex.label.cex=1.2, layout=igraph::layout.kamada.kawai)
+
+# GO plot
+plotGOgraph(go_enrich)
 
 # pathview
 ## pathway.id: KEGG pathway identifier

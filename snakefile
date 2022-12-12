@@ -2,7 +2,7 @@ configfile: "workflow/config/config2.yaml"
 data=config["DATA"]
 print(data)
 #
-input_dir="data/paried/sub_reads/"
+input_dir="data/paried/alfafa_zm4_reads/"
 #
 log_dir="log/"
 #
@@ -15,6 +15,20 @@ sickle_dir="results/trim/sickle/"
 reference_genome="data/paried/alfafa_zm4_reference_genome/zm-4.genome.fasta"
 hisat2_index_dir="data/paried/hisat2_index/"
 star_index_dir="data/paried/star_index/"
+#
+trinity_dir="results/assembly/trinity/"
+min_contig_length = 300
+max_trinity_memory = "16G"
+#
+transdecoder_dir = "results/assembly/transdecoder/"
+minimum_protein_length = 100
+pfam_file="/mnt/f/Database/Pfam/Pfam-A.hmm"
+
+#
+bowtie2_dir = "results/assembly/evaluation/bowtie2/"
+BUSCO_dir = "results/assembly/evaluation/BUSCO/"
+BUSCO_database = "/mnt/f/Database/BUSCO_odb10/embryophyta_odb10"
+BUSCO_reads_type = "tran"
 #
 hisat2_dir="results/align/hisat2/"
 star_dir="results/align/star/"
@@ -103,6 +117,103 @@ rule sickle_trim:
         -s {output.singles} \
         -q 35 -l 45
         """
+
+rule trinity_assembly:
+    input:
+        r1 = fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2 = fastp_dir+"{data}_2.trim_fastp.fq.gz"
+    output:
+        outdir = directory(trinity_dir+"{data}_trinity"),
+        fasta = trinity_dir+"{data}_trinity.Trinity.fasta",
+        stats = trinity_dir+"{data}_trinity.stats"
+    params:
+        min_length = min_contig_length,
+        max_memory = max_trinity_memory,
+        label = "{data}"
+    threads: 4
+    shell:
+        """
+        Trinity --seqType fq \
+        --left {input.r1}  \
+        --right {input.r2} \
+        --min_contig_length {params.min_length} \
+        --CPU {threads} \
+        --max_memory {params.max_memory} \
+        --output {output.outdir} \
+        --full_cleanup
+
+        TrinityStats.pl {output.fasta} > {output.stats}
+        """
+
+rule transdecoder_ORFs:
+    input:
+        trans_fasta = rules.trinity_assembly.output.fasta
+    output:
+        outdir = directory(transdecoder_dir+"{data}_ORF"),
+        pep =  transdecoder_dir+"{data}_ORF/longest_orfs.pep",
+        pfam = transdecoder_dir+"{data}_ORF/pfam.domtblout"
+    params:
+        min_length = minimum_protein_length,
+        pfam = pfam_file
+    threads: 4
+    shell:
+        """
+        TransDecoder.LongOrfs -m {params.min_length} -t {input} --output_dir {output.outdir}
+        hmmscan --cpu {threads} --domtblout {output.pfam} {params.pfam} {output.pep}
+        TransDecoder.Predict --cpu {threads} -t {input} --retain_pfam_hits {output.pfam} --output_dir {output.outdir}
+        """
+
+rule bowtie2_index:
+    input:
+        assemblyed_fasta = rules.trinity_assembly.output.fasta
+    output:
+        index_dir = directory(bowtie2_dir+"{data}"),
+        index_file = bowtie2_dir+"{data}_bowtie2_index.txt"
+    params:
+        prefix="{data}_index"
+    threads:
+        4
+    shell:
+        """
+        bowtie2-build --threads {threads} {input} {output.index_dir}{params.prefix} 
+        touch {output.index_file}
+        """
+
+rule bowtie2_align:
+    input:
+        r1 = fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2 = fastp_dir+"{data}_2.trim_fastp.fq.gz",
+        index_file = rules.bowtie2_index.output.index_dir
+    output:
+        stats = bowtie2_dir + "{data}_assembly_stats.txt",
+        bam   = bowtie2_dir + "{data}.align_bowtie2.bam"
+    threads: 4
+    shell:
+        """
+        bowtie2 -p {threads} -q --no-unal -k 20 -x {input.index_file}{data}_index \
+        -1 {input.r1} -2 {input.r2}  \
+        2> {output.stats} | samtools view -@ {threads} -Sb -o {output.bam}
+        """
+
+rule BUSCO_evaluation:
+    input:
+        assembled_fasta = rules.trinity_assembly.output.fasta
+    output:
+        outdir = directory(BUSCO_dir+ "{data}")
+    threads: 4
+    params:
+        db = BUSCO_database,
+        types = BUSCO_reads_type
+    shell:
+        """
+        busco -i {input} \ # assembled .fasta
+        -c {threads} \ # threads
+        -o {output} \ # name of output dir 
+        -m {param.types} \ # geno/prot/tran
+        -l {param.db} 
+        --offline 
+        """
+
 rule star_index:
     input:
         reference_genome = reference_genome

@@ -31,10 +31,10 @@ title(main="Sample MDS")
 # Find diff gene using voom -----------------------------------------------
 
 ## voom transform and variance weight
-## counts to log2 CPM (counts per million reads)£¬
+## counts to log2 CPM (counts per million reads)ï¿½ï¿½
 ## per million reads are determined by the norm.factors of calcNormFactors
 ## fit modol of log2CPM and estimate the residual
-## mean expression (red line) sqrt(residual standard deviation)£»
+## mean expression (red line) sqrt(residual standard deviation)ï¿½ï¿½
 
 ## generate group model
 design <- model.matrix(~0 + col.group)
@@ -60,7 +60,7 @@ contr.fit.bayes <- eBayes(contr.fit)
 
 ## diff gene list
 diff_gene <- topTable(contr.fit.bayes, sort.by = "P", n = Inf)
-diff_gene %>% filter(adj.P.Val < 0.05 & abs(logFC)>2) %>% dim()
+diff_gene %>% filter(adj.P.Val < 0.05 & abs(logFC)>2)
 
 diff_gene_limma <- diff_gene %>% as.data.frame() %>% 
   merge(gene_count, by = "row.names") %>% 
