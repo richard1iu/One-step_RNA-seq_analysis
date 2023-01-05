@@ -1,0 +1,312 @@
+configfile: "workflow/config/config2.yaml"
+data=config["DATA"]
+print(data)
+#
+input_dir="data/paried/alfafa_zm4_reads/"
+#
+log_dir="log/"
+#
+fastqc_dir="results/fastqc_results/"
+#
+fastp_dir="results/trim/fastp/"
+trammomatic_dir="results/trim/trimmomatic/"
+sickle_dir="results/trim/sickle/"
+
+
+rule all:
+    input:
+        expand(stringtie_dir + "quant/{data}/{data}.quant_stringtie.gtf",data = data),
+        stringtie_dir+"diff_gene_list.csv"
+
+rule fastqc_fq:
+    input:
+        r1=input_dir+"{data}_1.fq.gz",
+        r2=input_dir+"{data}_2.fq.gz"
+    output:
+        r1=multiext(fastqc_dir+ "{data}_1",".zip",".html"),
+        r2=multiext(fastqc_dir+ "{data}_2",".zip",".html")
+    log:
+        log_dir+"{data}.fastqc.log"
+    params:
+        fastqc_dir=fastqc_dir,
+        prefix = "{data}"
+    threads: 4
+    shell:
+        "fastqc {input.r1} {input.r2} -o {params.fastqc_dir} 2> {log}"
+
+rule multiqc_fq:
+    input:
+        fastqc_dir
+    output:
+        fastqc_dir+"multiqc_report.html"
+    threads: 4
+    shell:
+        "multiqc {input}/. -o {input} "
+
+rule fastp_trim:
+    input:
+        r1=input_dir+"{data}_1.fq.gz",
+        r2=input_dir+"{data}_2.fq.gz"
+    output:
+        r1_trim=fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2_trim=fastp_dir+"{data}_2.trim_fastp.fq.gz",
+        html=fastp_dir+"{data}.trim_fastp.html",
+        json=fastp_dir+"{data}.trim_fastp.json"
+    params:
+        min_len = 70
+    log:
+        log_dir+"{data}.trim_fastp.log"
+    threads: 4
+    shell:
+        """
+        fastp -i {input.r1} -I {input.r2} \
+        -o {output.r1_trim} -O {output.r2_trim} \
+        --thread {threads} --html {output.html} --json {output.json} 2>{log}
+        """
+
+rule kmers_trim:
+    input:
+        r1=fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2=fastp_dir+"{data}_2.trim_fastp.fq.gz",
+    output:
+        fq_trim=khmer_dir+"{data}.trim_khmer.fq.gz",
+        uniq_kmers=khmer_dir+"{data}.trim_khmer.txt",
+        trim_uniq_kmers=khmer_dir+"{data}.trim_khmer.txt",
+    shell:
+        """
+        interleave-reads.py {input.r1} {input.r2} | trim-low-abund.py -V -M 20e9 -C 3 -Z 18 - -o {output.fq_trim}
+        unique-kmers.py {input.r1} {input.r2} 1> {output.uniq_kmers}
+        unique-kmers.py {output.fq_trim} 1> {output.trim_uniq_kmers}
+        """
+
+rule megahit_assembly:
+    input:
+        r1 = fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2 = fastp_dir+"{data}_2.trim_fastp.fq.gz"
+    output:
+        fa = megahit_dir+"{data}_assembly_megahit.fasta"
+
+    params:
+        kmer_list = megahit_kmer_list
+        max_memory = max_megahit_memory,
+    threads: 4
+    shell:
+        """
+        megahit -1 {input.r1}  -2 {input.r2} -o {output.fa} \
+        -t {threads} \
+        -m {params.max_memory} \
+        --k-list {params.kmer_list}
+        """
+
+rule quast_AssemblyEvaluation:
+    input:
+        assembly_fa = rules.megahit_assembly.output.fa
+    output:
+        report = quast_dir+"{data}_assembly_evaluation.txt"
+    threads: 4
+    shell:
+        """
+        quast.py {input} -o {output}
+        """
+
+rule BUSCO_evaluation:
+    input:
+        assembly_fa = rules.megahit_assembly.output.fa
+    output:
+        outdir = directory(BUSCO_dir+ "{data}")
+    threads: 4
+    params:
+        db = BUSCO_database,
+        types = BUSCO_reads_type
+    shell:
+        """
+        busco -i {input} \ # assembled .fasta
+        -c {threads} \ # threads
+        -o {output} \ # name of output dir 
+        -m {params.types} \ # geno/prot/tran
+        -l {params.db} 
+        --offline 
+        """
+
+rule bowtie2_index:
+    input:
+        assembly_fa = rules.megahit_assembly.output.fa
+    output:
+        index_dir = directory(bowtie2_dir+"{data}"),
+        index_file = bowtie2_dir+"{data}_bowtie2_index.txt"
+    params:
+        prefix="{data}_index"
+    threads:
+        4
+    shell:
+        """
+        bowtie2-build --threads {threads} {input} {output.index_dir}{params.prefix} 
+        touch {output.index_file}
+        """
+
+rule bowtie2_align:
+    input:
+        r1 = fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2 = fastp_dir+"{data}_2.trim_fastp.fq.gz",
+        index_file = rules.bowtie2_index.output.index_dir
+    output:
+        stats = bowtie2_dir + "{data}_assembly_stats.txt",
+        bam   = bowtie2_dir + "{data}.align_bowtie2.bam"
+    threads: 4
+    shell:
+        """
+        bowtie2 -x {input.index_file}{data}_index \
+        -1 {input.r1} -2 {input.r2}  \
+        -p {threads} -q --no-unal -k 20 \
+        2> {output.stats} | samtools view -@ {threads} -Sb | samtools sort - -o {output.bam}
+
+        samtools index {output.bam}
+        """
+
+rule concoct_binning:
+    input:
+        assembly_fa = rules.megahit_assembly.output.fa,
+        bam = expand(bowtie2_dir + "{data}.align_bowtie2.bam", data=data)
+    output:
+        stat_dir = directory(concoct_dir),
+        index_file = hisat2_index_dir + "hisat2_index.txt",
+        bed = concoct_dir + "contigs_10K.bed",
+        fa =  concoct_dir + "contigs_10K.fa",
+        tsv = concoct_dir + "coverage_table.tsv"
+    params:
+        database = CHECKM_DATA_PATH,
+        chunk = concoct_chunck_size,
+        overlap = concoct_overlap_size
+    threads:
+        4
+    shell:
+        """
+        export CHECKM_DATA_PATH={params.database}
+        cut_up_fasta.py {input.assembly_fa} --chunk_size {params.chunk} --overlap_size {params.overlap} --merge_last -b {output.bed} > {output.fa}
+        concoct_coverage_table.py {output.bed} {input.bam} > {output.tsv}
+        concoct --composition_file {output.fa} --coverage_file {output.tsv} -b {output.dir}
+        merge_cutup_clustering.py {output.dir}clustering_gt1000.csv > {output.dir}clustering_merged.csv
+        mkdir concoct_output/fasta_bins
+        extract_fasta_bins.py {input.assembly_fa} {output.dir}clustering_merged.csv --output_path {output.dir}/fasta_bins
+
+        """
+
+rule hisat2_align:
+    input:
+        r1 = fastp_dir+"{data}_1.trim_fastp.fq.gz",
+        r2 = fastp_dir+"{data}_2.trim_fastp.fq.gz",
+        index_file = rules.hisat2_index.output.index_file
+    output:
+        sam = hisat2_dir + "{data}.align_hisat2.sam",
+        bam = hisat2_dir + "{data}.align_hisat2.bam"
+    threads: 4
+    params:
+        reference_genome = reference_genome,
+    shell:
+        """
+        hisat2 -p {threads} \
+        --dta \
+        -x {hisat2_index_dir}hisat2_index \
+        -1 {input.r1} -2 {input.r2} \
+        -S {output.sam} \
+        --dta-cufflinks --no-unal
+        samtools sort -@ {threads} -o {output.bam} {output.sam}
+        """
+
+rule stringtie_align:
+    input:
+        bam = rules.hisat2_align.output.bam
+    output:
+        gtf = stringtie_dir + "align/{data}.align_stringtie.gtf"
+    params:
+        l = "{data}",
+        reference_gtf=reference_gtf
+    threads:
+        4
+    shell:
+        """
+        stringtie -p {threads} -G {params.reference_gtf} -o {output.gtf} -l {params.l} {input.bam}
+        """
+
+rule stringtie_merge:
+    input:
+        gtf = expand(stringtie_dir + "align/{data}.align_stringtie.gtf",data=data)
+    output:
+        gtf = "results/quant/stringtie/stringtie_merged.gtf"
+    params:
+        l = "merge",
+        stringtie_dir=stringtie_dir,
+        reference_gtf=reference_gtf
+    threads:
+        4
+    shell:
+        """
+        ls -1 {input.gtf} >> {params.stringtie_dir}/sample_gtf_list.txt
+        stringtie --merge -p 4 -G {params.reference_gtf} -o {output.gtf}  {params.stringtie_dir}/sample_gtf_list.txt
+        """
+
+rule gffcompare:
+    input:
+        gtf = rules.stringtie_merge.output.gtf
+    output:
+        gffcompare = stringtie_dir+"gffcompare/gffcompare.annotated.gtf"
+    params:
+        stringtie_dir=stringtie_dir,
+        reference_gtf=reference_gtf
+    threads:
+        4
+    shell:
+        """
+        gffcompare -r {params.reference_gtf} -o {params.stringtie_dir}gffcompare/gffcompare {input.gtf}
+        """
+
+rule stringtie_quant:
+    input:
+        bam = rules.hisat2_align.output.bam,
+        merged_gtf=rules.stringtie_merge.output.gtf
+    output:
+        gtf = stringtie_dir + "quant/{data}/{data}.quant_stringtie.gtf"
+    threads:
+        4
+    shell:
+        """
+        stringtie -e -B -p {threads} -G {input.merged_gtf} -o {output.gtf} {input.bam}
+        """
+
+rule stringtie_count:
+    input:
+        gtf = expand(stringtie_dir + "quant/{data}/{data}.quant_stringtie.gtf",data=data)
+    output:
+        stringtie_dir+"gene_count_matrix.csv",
+        stringtie_dir+"transcript_count_matrix.csv"
+    params:
+        stringtie_dir=stringtie_dir,
+        reference_gtf=reference_gtf
+    threads:
+        4
+    shell:
+        """
+        ls {input.gtf} > {stringtie_dir}gtf_path.txt
+        # find {stringtie_dir} -name *.quant*.gtf > {stringtie_dir}gtf_path.txt
+        cat {stringtie_dir}gtf_path.txt | cut -d / -f5 > {stringtie_dir}sampleid.txt
+        paste {stringtie_dir}sampleid.txt {stringtie_dir}gtf_path.txt > {stringtie_dir}gtf_list.txt
+        rm {stringtie_dir}sampleid.txt {stringtie_dir}gtf_path.txt
+
+        python workflow/scripts/prepDE_py3.py \
+        -i {stringtie_dir}gtf_list.txt \
+        -t {stringtie_dir}transcript_count_matrix.csv \
+        -g {stringtie_dir}gene_count_matrix.csv
+        """
+
+rule DEseq2:
+    input:
+        gene_count = stringtie_dir+"gene_count_matrix.csv",
+        transcript_count = stringtie_dir+"transcript_count_matrix.csv"
+    output:
+        diff_gene_list = stringtie_dir+"diff_gene_list.csv"
+    params:
+        sample_group = input_dir+"sample_group.txt"
+    #conda:
+        #"envs/ballgown.yaml"
+    script:
+        "workflow/scripts/Deseq2.R"
